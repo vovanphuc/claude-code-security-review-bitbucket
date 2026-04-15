@@ -9,7 +9,7 @@ import subprocess
 from unittest.mock import Mock, patch
 from pathlib import Path
 
-from claudecode.github_action_audit import SimpleClaudeRunner
+from claudecode.bitbucket_pipeline_audit import SimpleClaudeRunner
 from claudecode.constants import DEFAULT_CLAUDE_MODEL
 
 

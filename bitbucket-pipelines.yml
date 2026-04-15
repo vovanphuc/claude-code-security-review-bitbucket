@@ -1,0 +1,104 @@
+# Bitbucket Pipelines configuration for Claude Code Security Review
+#
+# Required repository variables (Settings > Repository variables):
+#   ANTHROPIC_API_KEY  - Anthropic API key for Claude Code
+#   BITBUCKET_TOKEN    - Bitbucket auth token (username:app_password or access token)
+#                        Only needed if the built-in pipeline token lacks PR comment permissions
+#
+# Optional repository variables:
+#   CLAUDE_MODEL                           - Override default Claude model
+#   EXCLUDE_DIRECTORIES                    - Comma-separated dirs to skip
+#   ENABLE_CLAUDE_FILTERING                - 'true' to enable Claude API false-positive filtering
+#   FALSE_POSITIVE_FILTERING_INSTRUCTIONS  - Path to custom filtering instructions file
+#   CUSTOM_SECURITY_SCAN_INSTRUCTIONS      - Path to custom scan instructions file
+#   SILENCE_CLAUDECODE_COMMENTS            - 'true' to skip posting PR comments
+
+image: python:3.11-slim
+
+definitions:
+  steps:
+    - step: &security-review
+        name: "Claude Code Security Review"
+        size: 2x  # Use larger runner for Claude Code execution
+        script:
+          # Install system dependencies
+          - apt-get update && apt-get install -y --no-install-recommends curl jq ca-certificates
+          # Install Node.js (needed for Claude CLI and comment script)
+          - curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          - apt-get install -y --no-install-recommends nodejs
+
+          # Install Python dependencies
+          - pip install --no-cache-dir -r claudecode/requirements.txt
+
+          # Install Claude Code CLI
+          - npm install -g @anthropic-ai/claude-code
+
+          # Validate required variables
+          - |
+            if [ -z "$ANTHROPIC_API_KEY" ]; then
+              echo "ERROR: ANTHROPIC_API_KEY repository variable is not set."
+              echo "Go to Repository Settings > Repository variables to add it."
+              exit 1
+            fi
+
+          # Run security audit
+          - export REPO_PATH=$(pwd)
+          - export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$(pwd)"
+          - |
+            echo "Running Claude Code security analysis on PR #${BITBUCKET_PR_ID}..."
+            echo "Repository: ${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO_SLUG}"
+            echo "Python version: $(python --version)"
+            echo "Claude CLI version: $(claude --version 2>&1 || echo 'not found')"
+
+          - python -u claudecode/bitbucket_pipeline_audit.py > claudecode-results.json 2>claudecode-error.log || AUDIT_EXIT=$?
+
+          # Process results
+          - |
+            if [ -n "$AUDIT_EXIT" ]; then
+              echo "WARNING: Audit exited with code $AUDIT_EXIT"
+            fi
+
+            if [ -f claudecode-results.json ]; then
+              FILE_SIZE=$(wc -c < claudecode-results.json)
+
+              if [ "$FILE_SIZE" -lt 2 ]; then
+                echo "WARNING: Results file is empty or invalid"
+                if [ -f claudecode-error.log ]; then
+                  echo "Error log:"
+                  cat claudecode-error.log
+                fi
+              else
+                # Check for error response
+                if jq -e '.error' claudecode-results.json > /dev/null 2>&1; then
+                  ERROR_MSG=$(jq -r '.error' claudecode-results.json)
+                  echo "WARNING: Audit error - $ERROR_MSG"
+                else
+                  FINDINGS_COUNT=$(jq -r '.findings | if . == null then 0 else length end' claudecode-results.json 2>/dev/null || echo "0")
+                  echo "Found $FINDINGS_COUNT security issues"
+                  jq '.findings // []' claudecode-results.json > findings.json || echo '[]' > findings.json
+                fi
+              fi
+            else
+              echo "WARNING: Results file not found"
+              if [ -f claudecode-error.log ]; then
+                echo "Error log:"
+                cat claudecode-error.log
+              fi
+            fi
+
+          # Post PR comments (only for PR pipelines)
+          - |
+            if [ -n "$BITBUCKET_PR_ID" ] && [ -f findings.json ]; then
+              echo "Posting findings to PR #${BITBUCKET_PR_ID}..."
+              node scripts/comment-pr-findings.js || echo "WARNING: Failed to post PR comments"
+            fi
+
+        artifacts:
+          - claudecode-results.json
+          - findings.json
+          - claudecode-error.log
+
+pipelines:
+  pull-requests:
+    '**':
+      - step: *security-review

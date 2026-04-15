@@ -21,8 +21,8 @@ def get_logger(name: str) -> logging.Logger:
         handler = logging.StreamHandler(sys.stderr)
         
         # Get repo and PR number from environment for prefix
-        repo_name = os.environ.get('GITHUB_REPOSITORY', '')
-        pr_number = os.environ.get('PR_NUMBER', '')
+        repo_name = os.environ.get('BITBUCKET_REPO_FULL_NAME', '')
+        pr_number = os.environ.get('BITBUCKET_PR_ID', '')
         
         # Build prefix
         if repo_name and pr_number:

@@ -39,7 +39,7 @@ NOTE: PR diff was omitted due to size constraints. Please use the file explorati
         custom_categories_section = f"\n{custom_scan_instructions}\n"
     
     return f"""
-You are a senior security engineer conducting a focused security review of GitHub PR #{pr_data['number']}: "{pr_data['title']}"
+You are a senior security engineer conducting a focused security review of PR #{pr_data['number']}: "{pr_data['title']}"
 
 CONTEXT:
 - Repository: {pr_data.get('head', {}).get('repo', {}).get('full_name', 'unknown')}

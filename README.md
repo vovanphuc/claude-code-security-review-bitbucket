@@ -1,71 +1,120 @@
-# Claude Code Security Reviewer
+# Claude Code Security Reviewer for Bitbucket
 
-An AI-powered security review GitHub Action using Claude to analyze code changes for security vulnerabilities. This action provides intelligent, context-aware security analysis for pull requests using Anthropic's Claude Code tool for deep semantic security analysis. See our blog post [here](https://www.anthropic.com/news/automate-security-reviews-with-claude-code) for more details.
+An AI-powered security review tool for **Bitbucket Pipelines** using Claude to analyze code changes for security vulnerabilities. This tool provides intelligent, context-aware security analysis for pull requests using Anthropic's Claude Code for deep semantic security analysis.
+
+Based on the original [GitHub Action](https://github.com/anthropics/claude-code-security-review) by Anthropic. See their [blog post](https://www.anthropic.com/news/automate-security-reviews-with-claude-code) for more details.
 
 ## Features
 
 - **AI-Powered Analysis**: Uses Claude's advanced reasoning to detect security vulnerabilities with deep semantic understanding
-- **Diff-Aware Scanning**: For PRs, only analyzes changed files
-- **PR Comments**: Automatically comments on PRs with security findings
+- **Diff-Aware Scanning**: Only analyzes changed files in the pull request
+- **PR Comments**: Automatically posts inline comments on PRs with security findings
 - **Contextual Understanding**: Goes beyond pattern matching to understand code semantics
 - **Language Agnostic**: Works with any programming language
-- **False Positive Filtering**: Advanced filtering to reduce noise and focus on real vulnerabilities
+- **False Positive Filtering**: Two-stage filtering (hard rules + Claude API) to reduce noise
 
 ## Quick Start
 
-Add this to your repository's `.github/workflows/security.yml`:
+### 1. Add the pipeline configuration
+
+Copy `bitbucket-pipelines.yml` to your repository root (or merge with your existing one):
 
 ```yaml
-name: Security Review
+image: python:3.11-slim
 
-permissions:
-  pull-requests: write  # Needed for leaving PR comments
-  contents: read
+definitions:
+  steps:
+    - step: &security-review
+        name: "Claude Code Security Review"
+        size: 2x
+        script:
+          - apt-get update && apt-get install -y --no-install-recommends curl jq ca-certificates
+          - curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          - apt-get install -y --no-install-recommends nodejs
+          - pip install --no-cache-dir -r claudecode/requirements.txt
+          - npm install -g @anthropic-ai/claude-code
+          - |
+            if [ -z "$ANTHROPIC_API_KEY" ]; then
+              echo "ERROR: ANTHROPIC_API_KEY is not set"; exit 1
+            fi
+          - export REPO_PATH=$(pwd)
+          - export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$(pwd)"
+          - python -u claudecode/bitbucket_pipeline_audit.py > claudecode-results.json 2>claudecode-error.log || true
+          - jq '.findings // []' claudecode-results.json > findings.json || echo '[]' > findings.json
+          - |
+            if [ -n "$BITBUCKET_PR_ID" ] && [ -f findings.json ]; then
+              node scripts/comment-pr-findings.js || echo "WARNING: Failed to post PR comments"
+            fi
+        artifacts:
+          - claudecode-results.json
+          - findings.json
+          - claudecode-error.log
 
-on:
-  pull_request:
-
-jobs:
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 2
-      
-      - uses: anthropics/claude-code-security-review@main
-        with:
-          comment-pr: true
-          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+pipelines:
+  pull-requests:
+    '**':
+      - step: *security-review
 ```
+
+### 2. Set up repository variables
+
+Go to **Repository Settings > Pipelines > Repository variables** and add:
+
+| Variable | Value | Secured |
+|----------|-------|---------|
+| `ANTHROPIC_API_KEY` | Your Anthropic API key | Yes |
+| `BITBUCKET_TOKEN` | Auth token for PR comments (see [Authentication](#authentication)) | Yes |
+
+### 3. Enable Pipelines
+
+Go to **Repository Settings > Pipelines > Settings** and toggle **Enable Pipelines** to ON.
+
+### 4. Create a PR
+
+Open a pull request — the security review runs automatically.
+
+## Authentication
+
+`BITBUCKET_TOKEN` is used to fetch PR data and post comments. Two formats are supported:
+
+**Option A: App Password (recommended)**
+1. Go to **Personal Settings > App passwords**
+2. Create with permissions: **Repositories: Read**, **Pull requests: Read + Write**
+3. Set `BITBUCKET_TOKEN` to `username:app_password`
+
+**Option B: Repository Access Token**
+1. Go to **Repository Settings > Security > Access tokens**
+2. Create with **Pull requests: Read + Write** permission
+3. Set `BITBUCKET_TOKEN` to the token value (no username prefix)
 
 ## Security Considerations
 
-This action is not hardened against prompt injection attacks and should only be used to review trusted PRs. We recommend [configuring your repository](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#controlling-changes-from-forks-to-workflows-in-public-repositories) to use the "Require approval for all external contributors" option to ensure workflows only run after a maintainer has reviewed the PR.
+This tool is not hardened against prompt injection attacks and should only be used to review trusted PRs. For public repositories, ensure PRs from external contributors require approval before pipelines run.
 
 ## Configuration Options
 
-### Action Inputs
+### Repository Variables
 
-| Input | Description | Default | Required |
-|-------|-------------|---------|----------|
-| `claude-api-key` | Anthropic Claude API key for security analysis. <br>*Note*: This API key needs to be enabled for both the Claude API and Claude Code usage. | None | Yes |
-| `comment-pr` | Whether to comment on PRs with findings | `true` | No |
-| `upload-results` | Whether to upload results as artifacts | `true` | No |
-| `exclude-directories` | Comma-separated list of directories to exclude from scanning | None | No |
-| `claude-model` | Claude [model name](https://docs.anthropic.com/en/docs/about-claude/models/overview#model-names) to use. Defaults to Opus 4.1. | `claude-opus-4-1-20250805` | No |
-| `claudecode-timeout` | Timeout for ClaudeCode analysis in minutes | `20` | No |
-| `run-every-commit` | Run ClaudeCode on every commit (skips cache check). Warning: May increase false positives on PRs with many commits. | `false` | No |
-| `false-positive-filtering-instructions` | Path to custom false positive filtering instructions text file | None | No |
-| `custom-security-scan-instructions` | Path to custom security scan instructions text file to append to audit prompt | None | No |
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `ANTHROPIC_API_KEY` | Anthropic API key (must be enabled for both Claude API and Claude Code) | — | Yes |
+| `BITBUCKET_TOKEN` | Bitbucket auth token for API access | — | Yes |
+| `CLAUDE_MODEL` | Claude [model](https://docs.anthropic.com/en/docs/about-claude/models/overview#model-names) to use | `claude-opus-4-6` | No |
+| `EXCLUDE_DIRECTORIES` | Comma-separated list of directories to skip | — | No |
+| `ENABLE_CLAUDE_FILTERING` | Set `true` to enable Claude API false-positive filtering | `false` | No |
+| `FALSE_POSITIVE_FILTERING_INSTRUCTIONS` | Path to custom filtering instructions file | — | No |
+| `CUSTOM_SECURITY_SCAN_INSTRUCTIONS` | Path to custom scan instructions file | — | No |
+| `SILENCE_CLAUDECODE_COMMENTS` | Set `true` to skip posting PR comments | `false` | No |
 
-### Action Outputs
+### Cost Optimization
 
-| Output | Description |
-|--------|-------------|
-| `findings-count` | Total number of security findings |
-| `results-file` | Path to the results JSON file |
+To reduce API costs, use a smaller model:
+
+```
+CLAUDE_MODEL=claude-sonnet-4-6
+```
+
+This is ~5x cheaper than Opus while still providing effective security analysis.
 
 ## How It Works
 
@@ -73,14 +122,31 @@ This action is not hardened against prompt injection attacks and should only be 
 
 ```
 claudecode/
-├── github_action_audit.py  # Main audit script for GitHub Actions
-├── prompts.py              # Security audit prompt templates
-├── findings_filter.py      # False positive filtering logic
-├── claude_api_client.py    # Claude API client for false positive filtering
-├── json_parser.py          # Robust JSON parsing utilities
-├── requirements.txt        # Python dependencies
-├── test_*.py               # Test suites
-└── evals/                  # Eval tooling to test CC on arbitrary PRs
+├── bitbucket_pipeline_audit.py  # Main orchestration for Bitbucket Pipelines
+├── bitbucket_client.py          # Bitbucket Cloud API v2.0 client
+├── prompts.py                   # Security audit prompt templates
+├── findings_filter.py           # False positive filtering logic
+├── claude_api_client.py         # Claude API client for filtering
+├── json_parser.py               # Robust JSON parsing utilities
+├── constants.py                 # Exit codes, timeouts, model defaults
+├── requirements.txt             # Python dependencies
+├── test_*.py                    # Test suites
+└── evals/                       # Eval tooling
+scripts/
+└── comment-pr-findings.js       # Posts findings as PR comments
+```
+
+### Pipeline Flow
+
+```
+PR opened
+  → bitbucket_pipeline_audit.py fetches PR data/diff via Bitbucket API v2.0
+  → prompts.py builds security audit prompt with diff + PR context
+  → Claude Code CLI runs security analysis (3 retries, fallback without diff)
+  → json_parser.py extracts JSON findings from Claude's response
+  → findings_filter.py removes false positives (hard rules + optional Claude API)
+  → Results written to findings.json
+  → comment-pr-findings.js posts inline comments to PR via Bitbucket API
 ```
 
 ### Workflow
@@ -88,8 +154,8 @@ claudecode/
 1. **PR Analysis**: When a pull request is opened, Claude analyzes the diff to understand what changed
 2. **Contextual Review**: Claude examines the code changes in context, understanding the purpose and potential security implications
 3. **Finding Generation**: Security issues are identified with detailed explanations, severity ratings, and remediation guidance
-4. **False Positive Filtering**: Advanced filtering removes low-impact or false positive prone findings to reduce noise
-5. **PR Comments**: Findings are posted as review comments on the specific lines of code
+4. **False Positive Filtering**: Two-stage filtering removes low-impact or false positive findings
+5. **PR Comments**: Findings are posted as inline comments on the specific lines of code
 
 ## Security Analysis Capabilities
 
@@ -102,70 +168,66 @@ claudecode/
 - **Input Validation**: Missing validation, improper sanitization, buffer overflows
 - **Business Logic Flaws**: Race conditions, time-of-check-time-of-use (TOCTOU) issues
 - **Configuration Security**: Insecure defaults, missing security headers, permissive CORS
-- **Supply Chain**: Vulnerable dependencies, typosquatting risks
-- **Code Execution**: RCE via deserialization, pickle injection, eval injection
+- **Code Execution**: RCE via deserialization, eval injection
 - **Cross-Site Scripting (XSS)**: Reflected, stored, and DOM-based XSS
 
 ### False Positive Filtering
 
-The tool automatically excludes a variety of low-impact and false positive prone findings to focus on high-impact vulnerabilities:
+The tool automatically excludes low-impact and false positive prone findings:
 - Denial of Service vulnerabilities
 - Rate limiting concerns
 - Memory/CPU exhaustion issues
 - Generic input validation without proven impact
 - Open redirect vulnerabilities
 
-The false positive filtering can also be tuned as needed for a given project's security goals.
+The false positive filtering can be customized for your project's needs.
 
 ### Benefits Over Traditional SAST
 
 - **Contextual Understanding**: Understands code semantics and intent, not just patterns
-- **Lower False Positives**: AI-powered analysis reduces noise by understanding when code is actually vulnerable
-- **Detailed Explanations**: Provides clear explanations of why something is a vulnerability and how to fix it
-- **Adaptive Learning**: Can be customized with organization-specific security requirements
+- **Lower False Positives**: AI-powered analysis reduces noise
+- **Detailed Explanations**: Clear explanations of why something is vulnerable and how to fix it
+- **Adaptive**: Can be customized with organization-specific security requirements
 
-## Installation & Setup
+## Claude Code Integration: /security-review Command
 
-### GitHub Actions
-
-Follow the Quick Start guide above. The action handles all dependencies automatically.
-
-### Local Development
-
-To run the security scanner locally against a specific PR, see the [evaluation framework documentation](claudecode/evals/README.md).
-
-<a id="security-review-slash-command"></a>
-
-## Claude Code Integration: /security-review Command 
-
-By default, Claude Code ships a `/security-review` [slash command](https://docs.anthropic.com/en/docs/claude-code/slash-commands) that provides the same security analysis capabilities as the GitHub Action workflow, but integrated directly into your Claude Code development environment. To use this, simply run `/security-review` to perform a comprehensive security review of all pending changes.
+Claude Code ships a `/security-review` [slash command](https://docs.anthropic.com/en/docs/claude-code/slash-commands) that provides the same security analysis locally. Run `/security-review` in Claude Code to review all pending changes.
 
 ### Customizing the Command
 
-The default `/security-review` command is designed to work well in most cases, but it can also be customized based on your specific security needs. To do so: 
-
-1. Copy the [`security-review.md`](https://github.com/anthropics/claude-code-security-review/blob/main/.claude/commands/security-review.md?plain=1) file from this repository to your project's `.claude/commands/` folder. 
-2. Edit `security-review.md` to customize the security analysis. For example, you could add additional organization-specific directions to the false positive filtering instructions. 
+1. Copy [`security-review.md`](.claude/commands/security-review.md) to your project's `.claude/commands/` folder
+2. Edit to customize the security analysis for your needs
 
 ## Custom Scanning Configuration
 
-It is also possible to configure custom scanning and false positive filtering instructions, see the [`docs/`](docs/) folder for more details.  
+Configure custom scanning and false positive filtering instructions — see the [`docs/`](docs/) folder for details.
 
 ## Testing
 
-Run the test suite to validate functionality:
-
 ```bash
-cd claude-code-security-review
-# Run all tests
-pytest claudecode -v
+# Run all Python tests
+pytest claudecode -v --cov=claudecode --cov-report=term-missing
+
+# Run JavaScript tests
+cd scripts && bun install && bun test
 ```
+
+## Differences from the GitHub Action Version
+
+This is a Bitbucket adaptation of the original [claude-code-security-review](https://github.com/anthropics/claude-code-security-review) GitHub Action. Key differences:
+
+| | GitHub Action | Bitbucket Pipelines |
+|---|---|---|
+| **API** | GitHub REST API + `gh` CLI | Bitbucket Cloud API v2.0 |
+| **Auth** | `GITHUB_TOKEN` (auto-provided) | `BITBUCKET_TOKEN` (manual setup) |
+| **Subscription auth** | Supported via GitHub App (`max_subscription: true`) | Not supported — API key required |
+| **PR comments** | GitHub review comments with reactions | Bitbucket inline comments |
+| **Deduplication** | Cache-based marker files | Comment-based duplicate detection |
+| **Config** | `action.yml` composite action | `bitbucket-pipelines.yml` |
 
 ## Support
 
-For issues or questions:
-- Open an issue in this repository
-- Check the [GitHub Actions logs](https://docs.github.com/en/actions/monitoring-and-troubleshooting-workflows/viewing-workflow-run-history) for debugging information
+For issues or questions, open an issue in this repository.
 
 ## License
 

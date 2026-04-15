@@ -1,10 +1,7 @@
 # Requirements for claudecode - Claude Code PR Security Audit Tool
-# Core dependencies for the GitHub Action version
+# Core dependencies for the Bitbucket Pipelines version
 
-# GitHub API client
-PyGithub>=1.59.0
-
-# HTTP requests for GitHub API
+# HTTP requests for Bitbucket API
 requests>=2.28.0
 
 # JSON parsing utilities (no additional deps - uses stdlib)
